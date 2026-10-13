@@ -103,12 +103,30 @@ void PipelineCache::load(std::vector<std::byte>& initialData) {
     std::fprintf(stderr, "[pipeline-cache] loaded %.1f KiB from %s\n", static_cast<double>(initialData.size()) / 1024.0, path.string().c_str());
 }
 
-void PipelineCache::save(bool final) {
+    void PipelineCache::save(bool final) {
     const auto getData = context.Function<PFN_vkGetPipelineCacheData>("vkGetPipelineCacheData");
+    struct Snapshot {
+        VkDevice device;
+        PFN_vkDestroyPipelineCache destroy;
+        VkPipelineCache handle = VK_NULL_HANDLE;
+        ~Snapshot() {
+            if (handle != VK_NULL_HANDLE) destroy(device, handle, nullptr);
+        }
+    } snapshot{context.device, context.Function<PFN_vkDestroyPipelineCache>("vkDestroyPipelineCache")};
+    VkPipelineCache source = cache;
+    if (!final) {
+        const VkPipelineCacheCreateInfo info{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+        if (context.Function<PFN_vkCreatePipelineCache>("vkCreatePipelineCache")(context.device, &info, nullptr, &snapshot.handle) != VK_SUCCESS) {
+            snapshot.handle = VK_NULL_HANDLE;
+            return;
+        }
+        if (context.Function<PFN_vkMergePipelineCaches>("vkMergePipelineCaches")(context.device, snapshot.handle, 1, &cache) != VK_SUCCESS) return;
+        source = snapshot.handle;
+    }
     std::size_t size = 0;
-    if (getData(context.device, cache, &size, nullptr) != VK_SUCCESS || size == 0 || size == savedBytes) return;
+    if (getData(context.device, source, &size, nullptr) != VK_SUCCESS || size == 0 || size == savedBytes) return;
     std::vector<std::byte> file(sizeof(FileHeader) + size);
-    const auto result = getData(context.device, cache, &size, file.data() + sizeof(FileHeader));
+    const auto result = getData(context.device, source, &size, file.data() + sizeof(FileHeader));
     if (result != VK_SUCCESS && result != VK_INCOMPLETE) return;
     file.resize(sizeof(FileHeader) + size);
     const FileHeader header{FileMagic, FileFormat, size, ShaderRecompiler::HashBytes(std::span(file).subspan(sizeof(FileHeader)))};
